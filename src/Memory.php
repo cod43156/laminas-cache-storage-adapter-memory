@@ -377,7 +377,7 @@ final class Memory extends AbstractMetadataCapableAdapter implements
         assert($now >= 0);
         $expires = $this->calculateExpireTimestampBasedOnTtl($this->getOptions()->getTtl());
 
-        return $this->persistCacheItem($normalizedKey, new CacheItem($value, $now, $now, $expires));
+        return $this->persistCacheItem($normalizedKey, new CacheItem($value, $cacheItem->created, $now, $expires));
     }
 
     /**
