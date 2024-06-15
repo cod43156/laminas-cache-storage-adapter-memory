@@ -1,38 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <files psalm-version="5.24.0@462c80e31c34e58cc4f750c656be3927e80e550e">
   <file src="src/Memory.php">
-    <LessSpecificReturnStatement/>
-    <MixedArgument>
-      <code><![CDATA[$item['tags']]]></code>
-    </MixedArgument>
-    <MixedArrayAccess>
-      <code><![CDATA[$data[0]]]></code>
-      <code><![CDATA[$data[0]]]></code>
-      <code><![CDATA[$data[0]]]></code>
-      <code><![CDATA[$data[0]]]></code>
-    </MixedArrayAccess>
     <MixedAssignment>
       <code><![CDATA[$casToken]]></code>
-      <code><![CDATA[$result[$normalizedKey]]]></code>
-      <code><![CDATA[$value]]></code>
-      <code><![CDATA[$value]]></code>
-      <code><![CDATA[$value]]></code>
     </MixedAssignment>
-    <MixedInferredReturnType/>
-    <MixedOperand>
-      <code><![CDATA[$data[$key][1]]]></code>
-      <code><![CDATA[$data[$normalizedKey][1]]]></code>
-      <code><![CDATA[$data[$normalizedKey][1]]]></code>
-      <code><![CDATA[$data[1]]]></code>
-      <code><![CDATA[$this->data[$ns][$normalizedKey][1]]]></code>
-    </MixedOperand>
-    <MixedReturnStatement>
-      <code><![CDATA[$this->data[$ns][$key]['tags'] ?? []]]></code>
-    </MixedReturnStatement>
-    <MoreSpecificImplementedParamType>
-      <code><![CDATA[$options]]></code>
-    </MoreSpecificImplementedParamType>
-    <MoreSpecificReturnType/>
+    <PossiblyUnusedReturnValue>
+      <code><![CDATA[bool]]></code>
+    </PossiblyUnusedReturnValue>
   </file>
   <file src="test/unit/MemoryTest.php">
     <MissingReturnType>

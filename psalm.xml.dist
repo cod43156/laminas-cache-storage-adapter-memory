@@ -17,9 +17,11 @@
         <directory name="test"/>
         <ignoreFiles>
             <directory name="vendor"/>
+            <file name="test/integration/Composer/LaminasComponentInstallerIntegrationTest.php"/>
         </ignoreFiles>
     </projectFiles>
     <plugins>
         <pluginClass class="Psalm\PhpUnitPlugin\Plugin"/>
+        <pluginClass class="Lctrs\PsalmPsrContainerPlugin\Plugin"/>
     </plugins>
 </psalm>

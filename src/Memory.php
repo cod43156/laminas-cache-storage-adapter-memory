@@ -4,8 +4,12 @@ declare(strict_types=1);
 
 namespace Laminas\Cache\Storage\Adapter;
 
+use DateInterval;
+use DateTimeZone;
 use Laminas\Cache\Exception;
 use Laminas\Cache\Storage\AbstractMetadataCapableAdapter;
+use Laminas\Cache\Storage\Adapter\Memory\CacheItem;
+use Laminas\Cache\Storage\Adapter\Memory\Clock;
 use Laminas\Cache\Storage\Adapter\Memory\Metadata;
 use Laminas\Cache\Storage\AvailableSpaceCapableInterface;
 use Laminas\Cache\Storage\Capabilities;
@@ -16,19 +20,25 @@ use Laminas\Cache\Storage\FlushableInterface;
 use Laminas\Cache\Storage\IterableInterface;
 use Laminas\Cache\Storage\TaggableInterface;
 use Laminas\Cache\Storage\TotalSpaceCapableInterface;
-use Traversable;
+use Psr\Clock\ClockInterface;
 
 use function array_diff;
 use function array_keys;
+use function assert;
 use function count;
+use function date_default_timezone_get;
 use function max;
 use function memory_get_usage;
 use function round;
-use function strpos;
-use function time;
+use function sprintf;
+use function str_starts_with;
+
+use const PHP_INT_MAX;
+use const PHP_ROUND_HALF_UP;
 
 /**
- * @template-extends AbstractAdapter<MemoryOptions, Metadata>
+ * @template-extends AbstractMetadataCapableAdapter<MemoryOptions, Metadata>
+ * @template-implements IterableInterface<non-empty-string,mixed>
  */
 final class Memory extends AbstractMetadataCapableAdapter implements
     AvailableSpaceCapableInterface,
@@ -40,13 +50,23 @@ final class Memory extends AbstractMetadataCapableAdapter implements
     TaggableInterface,
     TotalSpaceCapableInterface
 {
-    /** @var array<string,array{0:mixed,1:int,tags?:list<string>}> */
+    /** @var array<string,array<non-empty-string|int,CacheItem>> */
     private array $data = [];
+    private ClockInterface $clock;
+
+    /**
+     * @param iterable<string,mixed>|MemoryOptions|null $options
+     */
+    public function __construct(iterable|MemoryOptions|null $options = null, ClockInterface|null $clock = null)
+    {
+        parent::__construct($options);
+        $this->clock = $clock ?? new Clock(new DateTimeZone(date_default_timezone_get()));
+    }
 
     /**
      * {@inheritDoc}
      */
-    public function setOptions(array|Traversable|AdapterOptions|MemoryOptions $options): self
+    public function setOptions(iterable|AdapterOptions|MemoryOptions $options): self
     {
         if (! $options instanceof MemoryOptions) {
             $options = new MemoryOptions($options);
@@ -61,9 +81,11 @@ final class Memory extends AbstractMetadataCapableAdapter implements
      */
     public function getOptions(): MemoryOptions
     {
-        if (! $this->options) {
+        if ($this->options === null) {
             $this->setOptions(new MemoryOptions());
         }
+
+        assert($this->options instanceof MemoryOptions);
         return $this->options;
     }
 
@@ -100,7 +122,8 @@ final class Memory extends AbstractMetadataCapableAdapter implements
         $keys = [];
 
         if (isset($this->data[$ns])) {
-            foreach ($this->data[$ns] as $key => &$tmp) {
+            foreach (array_keys($this->data[$ns]) as $key) {
+                $key = (string) $key;
                 if ($this->internalHasItem($key)) {
                     $keys[] = $key;
                 }
@@ -128,22 +151,19 @@ final class Memory extends AbstractMetadataCapableAdapter implements
      */
     public function clearExpired(): bool
     {
-        $ttl = $this->getOptions()->getTtl();
-        if ($ttl <= 0) {
-            return true;
-        }
-
         $ns = $this->getOptions()->getNamespace();
         if (! isset($this->data[$ns])) {
             return true;
         }
 
-        $data = &$this->data[$ns];
-        foreach ($data as $key => &$item) {
-            if (time() >= $data[$key][1] + $ttl) {
-                unset($data[$key]);
+        $items = $this->data[$ns];
+        foreach (array_keys($items) as $key) {
+            if ($this->clock->now()->getTimestamp() >= $items[$key]->expires) {
+                unset($items[$key]);
             }
         }
+
+        $this->data[$ns] = $items;
 
         return true;
     }
@@ -153,6 +173,11 @@ final class Memory extends AbstractMetadataCapableAdapter implements
      */
     public function clearByNamespace(string $namespace): bool
     {
+        /**
+         * @psalm-suppress TypeDoesNotContainType Even tho, we expect the prefix is being passed as a non-empty-string,
+         *                                        having this check around ensures that only those with a given prefix
+         *                                        are being dropped. Empty prefix would actually clear all.
+         */
         if ($namespace === '') {
             throw new Exception\InvalidArgumentException('No namespace given');
         }
@@ -166,6 +191,11 @@ final class Memory extends AbstractMetadataCapableAdapter implements
      */
     public function clearByPrefix(string $prefix): bool
     {
+        /**
+         * @psalm-suppress TypeDoesNotContainType Even tho, we expect the prefix is being passed as a non-empty-string,
+         *                                        having this check around ensures that only those with a given prefix
+         *                                        are being dropped. Empty prefix would actually clear all.
+         */
         if ($prefix === '') {
             throw new Exception\InvalidArgumentException('No prefix given');
         }
@@ -175,12 +205,14 @@ final class Memory extends AbstractMetadataCapableAdapter implements
             return true;
         }
 
-        $data = &$this->data[$ns];
-        foreach ($data as $key => &$item) {
-            if (strpos($key, $prefix) === 0) {
+        $data = $this->data[$ns];
+        foreach (array_keys($data) as $key) {
+            if (str_starts_with((string) $key, $prefix)) {
                 unset($data[$key]);
             }
         }
+
+        $this->data[$ns] = $data;
 
         return true;
     }
@@ -193,11 +225,13 @@ final class Memory extends AbstractMetadataCapableAdapter implements
     public function setTags(string $key, array $tags): bool
     {
         $ns = $this->getOptions()->getNamespace();
-        if (! isset($this->data[$ns][$key])) {
+
+        $cacheItem = $this->data[$ns][$key] ?? null;
+        if ($cacheItem === null) {
             return false;
         }
 
-        $this->data[$ns][$key]['tags'] = $tags;
+        $this->data[$ns][$key]->tags = $tags;
         return true;
     }
 
@@ -206,18 +240,18 @@ final class Memory extends AbstractMetadataCapableAdapter implements
      */
     public function getTags(string $key): array|false
     {
-        $ns = $this->getOptions()->getNamespace();
-        if (! isset($this->data[$ns][$key])) {
+        $cacheItem = $this->getCacheItem($key);
+        if ($cacheItem === null) {
             return false;
         }
 
-        return $this->data[$ns][$key]['tags'] ?? [];
+        return $cacheItem->tags;
     }
 
     /**
      * {@inheritDoc}
      */
-    public function clearByTags(array $tags, $disjunction = false): bool
+    public function clearByTags(array $tags, bool $disjunction = false): bool
     {
         $ns = $this->getOptions()->getNamespace();
         if (! isset($this->data[$ns])) {
@@ -225,15 +259,17 @@ final class Memory extends AbstractMetadataCapableAdapter implements
         }
 
         $tagCount = count($tags);
-        $data     = &$this->data[$ns];
-        foreach ($data as $key => &$item) {
-            if (isset($item['tags'])) {
-                $diff = array_diff($tags, $item['tags']);
+        $data     = $this->data[$ns];
+        foreach ($data as $key => $item) {
+            if ($item->tags !== []) {
+                $diff = array_diff($tags, $item->tags);
                 if (($disjunction && count($diff) < $tagCount) || (! $disjunction && ! $diff)) {
                     unset($data[$key]);
                 }
             }
         }
+
+        $this->data[$ns] = $data;
 
         return true;
     }
@@ -245,50 +281,14 @@ final class Memory extends AbstractMetadataCapableAdapter implements
      */
     protected function internalGetItem(string $normalizedKey, bool|null &$success = null, mixed &$casToken = null): mixed
     {
-        $options = $this->getOptions();
-        $ns      = $options->getNamespace();
-        $success = isset($this->data[$ns][$normalizedKey]);
-        if ($success) {
-            $data = &$this->data[$ns][$normalizedKey];
-            $ttl  = $options->getTtl();
-            if ($ttl && time() >= $data[1] + $ttl) {
-                $success = false;
-            }
-        }
-
-        if (! $success) {
+        $item    = $this->getCacheItem($normalizedKey);
+        $success = $item !== null;
+        if ($item === null) {
             return null;
         }
 
-        $casToken = $data[0];
-        return $data[0];
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    protected function internalGetItems(array $normalizedKeys): array
-    {
-        $options = $this->getOptions();
-        $ns      = $options->getNamespace();
-        if (! isset($this->data[$ns])) {
-            return [];
-        }
-
-        $data = &$this->data[$ns];
-        $ttl  = $options->getTtl();
-        $now  = time();
-
-        $result = [];
-        foreach ($normalizedKeys as $normalizedKey) {
-            if (isset($data[$normalizedKey])) {
-                if (! $ttl || $now < $data[$normalizedKey][1] + $ttl) {
-                    $result[$normalizedKey] = $data[$normalizedKey][0];
-                }
-            }
-        }
-
-        return $result;
+        $casToken = $item->value;
+        return $casToken;
     }
 
     /**
@@ -296,46 +296,7 @@ final class Memory extends AbstractMetadataCapableAdapter implements
      */
     protected function internalHasItem(string $normalizedKey): bool
     {
-        $options = $this->getOptions();
-        $ns      = $options->getNamespace();
-        if (! isset($this->data[$ns][$normalizedKey])) {
-            return false;
-        }
-
-        // check if expired
-        $ttl = $options->getTtl();
-        if ($ttl && time() >= $this->data[$ns][$normalizedKey][1] + $ttl) {
-            return false;
-        }
-
-        return true;
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    protected function internalHasItems(array $normalizedKeys): array
-    {
-        $options = $this->getOptions();
-        $ns      = $options->getNamespace();
-        if (! isset($this->data[$ns])) {
-            return [];
-        }
-
-        $data = &$this->data[$ns];
-        $ttl  = $options->getTtl();
-        $now  = time();
-
-        $result = [];
-        foreach ($normalizedKeys as $normalizedKey) {
-            if (isset($data[$normalizedKey])) {
-                if (! $ttl || $now < $data[$normalizedKey][1] + $ttl) {
-                    $result[] = $normalizedKey;
-                }
-            }
-        }
-
-        return $result;
+        return $this->getCacheItem($normalizedKey) !== null;
     }
 
     /**
@@ -343,13 +304,14 @@ final class Memory extends AbstractMetadataCapableAdapter implements
      */
     protected function internalGetMetadata(string $normalizedKey): Metadata|null
     {
-        if (! $this->internalHasItem($normalizedKey)) {
+        $cacheItem = $this->getCacheItem($normalizedKey);
+        if ($cacheItem === null) {
             return null;
         }
 
-        $ns = $this->getOptions()->getNamespace();
         return new Metadata(
-            mtime: $this->data[$ns][$normalizedKey][1],
+            mtime: $cacheItem->lastModified,
+            ctime: $cacheItem->created,
         );
     }
 
@@ -369,38 +331,10 @@ final class Memory extends AbstractMetadataCapableAdapter implements
             );
         }
 
-        $ns                              = $options->getNamespace();
-        $this->data[$ns][$normalizedKey] = [$value, time()];
-
-        return true;
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    protected function internalSetItems(array $normalizedKeyValuePairs): array
-    {
-        $options = $this->getOptions();
-
-        if (! $this->hasAvailableSpace()) {
-            $memoryLimit = $options->getMemoryLimit();
-            throw new Exception\OutOfSpaceException(
-                "Memory usage exceeds limit ({$memoryLimit})."
-            );
-        }
-
-        $ns = $options->getNamespace();
-        if (! isset($this->data[$ns])) {
-            $this->data[$ns] = [];
-        }
-
-        $data = &$this->data[$ns];
-        $now  = time();
-        foreach ($normalizedKeyValuePairs as $normalizedKey => $value) {
-            $data[$normalizedKey] = [$value, $now];
-        }
-
-        return [];
+        $now = $this->clock->now()->getTimestamp();
+        assert($now >= 0);
+        $expires = $this->calculateExpireTimestampBasedOnTtl($options->getTtl());
+        return $this->persistCacheItem($normalizedKey, new CacheItem($value, $now, $now, $expires));
     }
 
     /**
@@ -417,46 +351,13 @@ final class Memory extends AbstractMetadataCapableAdapter implements
             );
         }
 
-        $ns = $options->getNamespace();
-        if (isset($this->data[$ns][$normalizedKey])) {
+        $cacheItem = $this->getCacheItem($normalizedKey);
+        if ($cacheItem !== null) {
             return false;
         }
 
-        $this->data[$ns][$normalizedKey] = [$value, time()];
+        $this->internalSetItem($normalizedKey, $value);
         return true;
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    protected function internalAddItems(array $normalizedKeyValuePairs): array
-    {
-        $options = $this->getOptions();
-
-        if (! $this->hasAvailableSpace()) {
-            $memoryLimit = $options->getMemoryLimit();
-            throw new Exception\OutOfSpaceException(
-                "Memory usage exceeds limit ({$memoryLimit})."
-            );
-        }
-
-        $ns = $options->getNamespace();
-        if (! isset($this->data[$ns])) {
-            $this->data[$ns] = [];
-        }
-
-        $result = [];
-        $data   = &$this->data[$ns];
-        $now    = time();
-        foreach ($normalizedKeyValuePairs as $normalizedKey => $value) {
-            if (isset($data[$normalizedKey])) {
-                $result[] = $normalizedKey;
-            } else {
-                $data[$normalizedKey] = [$value, $now];
-            }
-        }
-
-        return $result;
     }
 
     /**
@@ -464,36 +365,19 @@ final class Memory extends AbstractMetadataCapableAdapter implements
      */
     protected function internalReplaceItem(string $normalizedKey, mixed $value): bool
     {
-        $ns = $this->getOptions()->getNamespace();
-        if (! isset($this->data[$ns][$normalizedKey])) {
+        $cacheItem = $this->getCacheItem($normalizedKey);
+        if ($cacheItem === null) {
             return false;
         }
-        $this->data[$ns][$normalizedKey] = [$value, time()];
 
-        return true;
-    }
+        /**
+         * NOTE: We are explicitly implementing this as we do not want to have available space check during replacement
+         */
+        $now = $this->clock->now()->getTimestamp();
+        assert($now >= 0);
+        $expires = $this->calculateExpireTimestampBasedOnTtl($this->getOptions()->getTtl());
 
-    /**
-     * {@inheritDoc}
-     */
-    protected function internalReplaceItems(array $normalizedKeyValuePairs): array
-    {
-        $ns = $this->getOptions()->getNamespace();
-        if (! isset($this->data[$ns])) {
-            return array_keys($normalizedKeyValuePairs);
-        }
-
-        $result = [];
-        $data   = &$this->data[$ns];
-        foreach ($normalizedKeyValuePairs as $normalizedKey => $value) {
-            if (! isset($data[$normalizedKey])) {
-                $result[] = $normalizedKey;
-            } else {
-                $data[$normalizedKey] = [$value, time()];
-            }
-        }
-
-        return $result;
+        return $this->persistCacheItem($normalizedKey, new CacheItem($value, $now, $now, $expires));
     }
 
     /**
@@ -501,14 +385,16 @@ final class Memory extends AbstractMetadataCapableAdapter implements
      */
     protected function internalTouchItem(string $normalizedKey): bool
     {
-        $ns = $this->getOptions()->getNamespace();
-
-        if (! isset($this->data[$ns][$normalizedKey])) {
+        $cacheItem = $this->getCacheItem($normalizedKey);
+        if ($cacheItem === null) {
             return false;
         }
 
-        $this->data[$ns][$normalizedKey][1] = time();
-        return true;
+        $now = $this->clock->now()->getTimestamp();
+        assert($now >= 0);
+        $expires = $this->calculateExpireTimestampBasedOnTtl($this->getOptions()->getTtl());
+
+        return $this->persistCacheItem($normalizedKey, new CacheItem($cacheItem->value, $cacheItem->created, $now, $expires, $cacheItem->tags));
     }
 
     /**
@@ -516,11 +402,12 @@ final class Memory extends AbstractMetadataCapableAdapter implements
      */
     protected function internalRemoveItem(string $normalizedKey): bool
     {
-        $ns = $this->getOptions()->getNamespace();
-        if (! isset($this->data[$ns][$normalizedKey])) {
+        $cacheItem = $this->getCacheItem($normalizedKey);
+        if ($cacheItem === null) {
             return false;
         }
 
+        $ns = $this->getOptions()->getNamespace();
         unset($this->data[$ns][$normalizedKey]);
 
         // remove empty namespace
@@ -569,5 +456,56 @@ final class Memory extends AbstractMetadataCapableAdapter implements
 
         $free = $total - (float) memory_get_usage(true);
         return $free > 0;
+    }
+
+    private function getCacheItem(string $key): CacheItem|null
+    {
+        $namespace = $this->getOptions()->getNamespace();
+        $cacheItem = $this->data[$namespace][$key] ?? null;
+        if ($cacheItem === null) {
+            return null;
+        }
+
+        if ($this->clock->now()->getTimestamp() >= $cacheItem->expires) {
+            unset($this->data[$namespace][$key]);
+            return null;
+        }
+
+        return $cacheItem;
+    }
+
+    /**
+     * @param non-empty-string $key
+     */
+    private function persistCacheItem(string $key, CacheItem $item): bool
+    {
+        $namespace                    = $this->getOptions()->getNamespace();
+        $this->data[$namespace][$key] = $item;
+
+        return true;
+    }
+
+    /**
+     * @return non-negative-int
+     */
+    private function calculateExpireTimestampBasedOnTtl(float|int $ttl): int
+    {
+        if ($ttl < 1) {
+            return PHP_INT_MAX;
+        }
+
+        $ttl      = (int) round($ttl, PHP_ROUND_HALF_UP);
+        $interval = DateInterval::createFromDateString(sprintf('%d seconds', $ttl));
+        if ($interval === false) {
+            throw new Exception\InvalidArgumentException('Configured TTL cannot be converted to seconds.');
+        }
+
+        $timestamp = $this->clock
+            ->now()
+            ->add($interval)
+            ->getTimestamp();
+
+        assert($timestamp >= 0);
+        return $timestamp;
     }
 }
