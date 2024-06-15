@@ -89,8 +89,6 @@ final class Memory extends AbstractMetadataCapableAdapter implements
         return $this->options;
     }
 
-    /* TotalSpaceCapableInterface */
-
     /**
      * {@inheritDoc}
      */
@@ -98,8 +96,6 @@ final class Memory extends AbstractMetadataCapableAdapter implements
     {
         return $this->getOptions()->getMemoryLimit();
     }
-
-    /* AvailableSpaceCapableInterface */
 
     /**
      * {@inheritDoc}
@@ -110,8 +106,6 @@ final class Memory extends AbstractMetadataCapableAdapter implements
         $avail = $total - (float) memory_get_usage(true);
         return (int) round(max($avail, 0));
     }
-
-    /* IterableInterface */
 
     /**
      * {@inheritDoc}
@@ -133,8 +127,6 @@ final class Memory extends AbstractMetadataCapableAdapter implements
         return new KeyListIterator($this, $keys);
     }
 
-    /* FlushableInterface */
-
     /**
      * {@inheritDoc}
      */
@@ -143,8 +135,6 @@ final class Memory extends AbstractMetadataCapableAdapter implements
         $this->data = [];
         return true;
     }
-
-    /* ClearExpiredInterface */
 
     /**
      * {@inheritDoc}
@@ -217,8 +207,6 @@ final class Memory extends AbstractMetadataCapableAdapter implements
         return true;
     }
 
-    /* TaggableInterface */
-
     /**
      * {@inheritDoc}
      */
@@ -274,13 +262,14 @@ final class Memory extends AbstractMetadataCapableAdapter implements
         return true;
     }
 
-    /* reading */
-
     /**
      * {@inheritDoc}
      */
-    protected function internalGetItem(string $normalizedKey, bool|null &$success = null, mixed &$casToken = null): mixed
-    {
+    protected function internalGetItem(
+        string $normalizedKey,
+        bool|null &$success = null,
+        mixed &$casToken = null
+    ): mixed {
         $item    = $this->getCacheItem($normalizedKey);
         $success = $item !== null;
         if ($item === null) {
@@ -314,8 +303,6 @@ final class Memory extends AbstractMetadataCapableAdapter implements
             ctime: $cacheItem->created,
         );
     }
-
-    /* writing */
 
     /**
      * {@inheritDoc}
@@ -394,7 +381,10 @@ final class Memory extends AbstractMetadataCapableAdapter implements
         assert($now >= 0);
         $expires = $this->calculateExpireTimestampBasedOnTtl($this->getOptions()->getTtl());
 
-        return $this->persistCacheItem($normalizedKey, new CacheItem($cacheItem->value, $cacheItem->created, $now, $expires, $cacheItem->tags));
+        return $this->persistCacheItem(
+            $normalizedKey,
+            new CacheItem($cacheItem->value, $cacheItem->created, $now, $expires, $cacheItem->tags),
+        );
     }
 
     /**
@@ -417,8 +407,6 @@ final class Memory extends AbstractMetadataCapableAdapter implements
 
         return true;
     }
-
-    /* status */
 
     /**
      * {@inheritDoc}
@@ -443,14 +431,11 @@ final class Memory extends AbstractMetadataCapableAdapter implements
         );
     }
 
-    /* internal */
-
     private function hasAvailableSpace(): bool
     {
         $total = $this->getOptions()->getMemoryLimit();
 
-        // check memory limit disabled
-        if ($total <= 0) {
+        if ($total <= MemoryOptions::UNLIMITED_MEMORY) {
             return true;
         }
 

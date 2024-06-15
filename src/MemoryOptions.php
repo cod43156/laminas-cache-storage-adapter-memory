@@ -14,7 +14,7 @@ use function strtoupper;
 
 final class MemoryOptions extends AdapterOptions
 {
-    private const UNLIMITED_MEMORY = 0;
+    public const UNLIMITED_MEMORY = 0;
 
     protected int $memoryLimit;
     private bool $defaultMemoryLimit = true;

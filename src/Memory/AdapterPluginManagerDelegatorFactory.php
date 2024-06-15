@@ -13,6 +13,9 @@ use function assert;
 
 final class AdapterPluginManagerDelegatorFactory
 {
+    /**
+     * @phpcs:disable WebimpressCodingStandard.NamingConventions.ValidVariableName.NotCamelCaps
+     */
     public function __invoke(ContainerInterface $_, string $__, callable $callback): AdapterPluginManager
     {
         $pluginManager = $callback();

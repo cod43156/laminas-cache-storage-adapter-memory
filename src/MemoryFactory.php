@@ -12,6 +12,9 @@ use function assert;
 
 final class MemoryFactory
 {
+    /**
+     * @phpcs:disable WebimpressCodingStandard.NamingConventions.ValidVariableName.NotCamelCaps
+     */
     public function __invoke(ContainerInterface $container, string $_, array|null $options = null): Memory
     {
         $clock = null;
