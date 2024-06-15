@@ -5,27 +5,37 @@ declare(strict_types=1);
 namespace Laminas\Cache\Storage\Adapter;
 
 use Laminas\Cache\Exception;
+use Laminas\Stdlib\AbstractOptions;
 
 use function ini_get;
 use function is_numeric;
 use function preg_match;
 use function strtoupper;
 
-/**
- * These are options specific to the APC adapter
- */
-class MemoryOptions extends AdapterOptions
+final class MemoryOptions extends AdapterOptions
 {
-    /**
-     * memory limit
-     *
-     * @var null|int
-     */
-    protected $memoryLimit;
+    public const UNLIMITED_MEMORY = 0;
+
+    protected int $memoryLimit;
+    private bool $defaultMemoryLimit = true;
 
     /**
-     * Set memory limit
-     *
+     * @param iterable<string,mixed>|AbstractOptions|null $options
+     */
+    public function __construct(iterable|AbstractOptions|null $options = null)
+    {
+        // By default use half of PHP's memory limit if possible
+        $memoryLimit = $this->normalizeMemoryLimit((string) ini_get('memory_limit'));
+        if ($memoryLimit >= 0) {
+            $this->memoryLimit = (int) ($memoryLimit / 2);
+        } else {
+            $this->memoryLimit = self::UNLIMITED_MEMORY;
+        }
+
+        parent::__construct($options);
+    }
+
+    /**
      * - A number less or equal 0 will disable the memory limit
      * - When a number is used, the value is measured in bytes. Shorthand notation may also be used.
      * - If the used memory of PHP exceeds this limit an OutOfSpaceException
@@ -33,17 +43,17 @@ class MemoryOptions extends AdapterOptions
      *
      * @link http://php.net/manual/faq.using.php#faq.using.shorthandbytes
      *
-     * @param  string|int $memoryLimit
-     * @return MemoryOptions Provides a fluent interface
+     * @psalm-api
      */
-    public function setMemoryLimit($memoryLimit)
+    public function setMemoryLimit(string|int $memoryLimit): MemoryOptions
     {
         $memoryLimit = $this->normalizeMemoryLimit($memoryLimit);
 
-        if ($this->memoryLimit !== $memoryLimit) {
+        if ($this->defaultMemoryLimit === false && $this->memoryLimit !== $memoryLimit) {
             $this->triggerOptionEvent('memory_limit', $memoryLimit);
-            $this->memoryLimit = $memoryLimit;
         }
+        $this->defaultMemoryLimit = false;
+        $this->memoryLimit        = $memoryLimit;
 
         return $this;
     }
@@ -53,39 +63,24 @@ class MemoryOptions extends AdapterOptions
      *
      * If the used memory of PHP exceeds this limit an OutOfSpaceException
      * will be thrown.
-     *
-     * @return int
      */
-    public function getMemoryLimit()
+    public function getMemoryLimit(): int
     {
-        if ($this->memoryLimit === null) {
-            // By default use half of PHP's memory limit if possible
-            $memoryLimit = $this->normalizeMemoryLimit(ini_get('memory_limit'));
-            if ($memoryLimit >= 0) {
-                $this->memoryLimit = (int) ($memoryLimit / 2);
-            } else {
-                // disable memory limit
-                $this->memoryLimit = 0;
-            }
-        }
-
         return $this->memoryLimit;
     }
 
     /**
      * Normalized a given value of memory limit into the number of bytes
      *
-     * @param string|int $value
      * @throws Exception\InvalidArgumentException
-     * @return int
      */
-    protected function normalizeMemoryLimit($value)
+    protected function normalizeMemoryLimit(string|int $value): int
     {
         if (is_numeric($value)) {
             return (int) $value;
         }
 
-        if (! preg_match('/(\-?\d+)\s*(\w*)/', ini_get('memory_limit'), $matches)) {
+        if (! preg_match('/(\-?\d+)\s*(\w*)/', (string) ini_get('memory_limit'), $matches)) {
             throw new Exception\InvalidArgumentException("Invalid  memory limit '{$value}'");
         }
 

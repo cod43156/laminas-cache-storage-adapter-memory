@@ -4,21 +4,21 @@ declare(strict_types=1);
 
 namespace LaminasTest\Cache\Psr\CacheItemPool;
 
-use Laminas\Cache\Psr\CacheItemPool\CacheException;
-use Laminas\Cache\Psr\CacheItemPool\CacheItemPoolDecorator;
 use Laminas\Cache\Storage\Adapter\Memory;
-use PHPUnit\Framework\TestCase;
+use Laminas\Cache\Storage\StorageInterface;
+use LaminasTest\Cache\Storage\Adapter\AbstractCacheItemPoolIntegrationTest;
 
-class MemoryIntegrationTest extends TestCase
+final class MemoryIntegrationTest extends AbstractCacheItemPoolIntegrationTest
 {
-    /**
-     * The memory adapter calculates the TTL on reading which violates PSR-6
-     */
-    public function testAdapterNotSupported()
-    {
-        $storage = new Memory();
+    private const TRANSIENT_STORAGE = 'Memory cache is not persistent and thus re-instantiating leads to data loss.';
+    /** @var array<non-empty-string,non-empty-string> */
+    protected array $skippedTests = [
+        'testSaveWithoutExpire'         => self::TRANSIENT_STORAGE,
+        'testDeferredSaveWithoutCommit' => self::TRANSIENT_STORAGE,
+    ];
 
-        $this->expectException(CacheException::class);
-        new CacheItemPoolDecorator($storage);
+    protected function createStorage(): StorageInterface
+    {
+        return new Memory();
     }
 }
