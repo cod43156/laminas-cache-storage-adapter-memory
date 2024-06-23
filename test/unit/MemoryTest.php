@@ -58,7 +58,7 @@ final class MemoryTest extends AbstractCommonAdapterTest
         self::assertSame(['foo'], $storage->setItems(['foo' => 'bar', 'bar' => 'baz', 'baz' => 'qoo', 'qoo' => 'ooq']));
     }
 
-    public function testWillOldestItemWhenPersistingMoreThanAllowedItems(): void
+    public function testWillRemoveOldestItemWhenPersistingMoreThanAllowedItems(): void
     {
         $storage = new Memory(new MemoryOptions(['max_items' => 3]));
         self::assertTrue($storage->setItem('foo', 'bar'));
