@@ -14,15 +14,17 @@ use Lcobucci\Clock\FrozenClock;
 use function assert;
 
 /**
- * @template-extends AbstractCommonAdapterTest<Memory, MemoryOptions>
+ * @template-extends AbstractCommonAdapterTest<MemoryOptions,Memory>
  */
 final class MemoryTest extends AbstractCommonAdapterTest
 {
+    use ModifiableClockTrait;
+
     public function setUp(): void
     {
         // instantiate memory adapter
         $this->options = new MemoryOptions();
-        $this->storage = new Memory($this->options);
+        $this->storage = new Memory($this->options, $this->getClock());
 
         parent::setUp();
     }
