@@ -11,7 +11,6 @@ use Laminas\Cache\Storage\AbstractMetadataCapableAdapter;
 use Laminas\Cache\Storage\Adapter\Memory\CacheItem;
 use Laminas\Cache\Storage\Adapter\Memory\Clock;
 use Laminas\Cache\Storage\Adapter\Memory\Metadata;
-use Laminas\Cache\Storage\AvailableSpaceCapableInterface;
 use Laminas\Cache\Storage\Capabilities;
 use Laminas\Cache\Storage\ClearByNamespaceInterface;
 use Laminas\Cache\Storage\ClearByPrefixInterface;
@@ -19,16 +18,14 @@ use Laminas\Cache\Storage\ClearExpiredInterface;
 use Laminas\Cache\Storage\FlushableInterface;
 use Laminas\Cache\Storage\IterableInterface;
 use Laminas\Cache\Storage\TaggableInterface;
-use Laminas\Cache\Storage\TotalSpaceCapableInterface;
 use Psr\Clock\ClockInterface;
 
 use function array_diff;
 use function array_keys;
+use function array_reverse;
 use function assert;
 use function count;
 use function date_default_timezone_get;
-use function max;
-use function memory_get_usage;
 use function round;
 use function sprintf;
 use function str_starts_with;
@@ -41,14 +38,12 @@ use const PHP_ROUND_HALF_UP;
  * @template-implements IterableInterface<non-empty-string,mixed>
  */
 final class Memory extends AbstractMetadataCapableAdapter implements
-    AvailableSpaceCapableInterface,
     ClearByPrefixInterface,
     ClearByNamespaceInterface,
     ClearExpiredInterface,
     FlushableInterface,
     IterableInterface,
-    TaggableInterface,
-    TotalSpaceCapableInterface
+    TaggableInterface
 {
     /** @var array<string,array<non-empty-string|int,CacheItem>> */
     private array $data = [];
@@ -92,24 +87,6 @@ final class Memory extends AbstractMetadataCapableAdapter implements
     /**
      * {@inheritDoc}
      */
-    public function getTotalSpace(): int
-    {
-        return $this->getOptions()->getMemoryLimit();
-    }
-
-    /**
-     * {@inheritDoc}
-     */
-    public function getAvailableSpace(): int
-    {
-        $total = $this->getOptions()->getMemoryLimit();
-        $avail = $total - (float) memory_get_usage(true);
-        return (int) round(max($avail, 0));
-    }
-
-    /**
-     * {@inheritDoc}
-     */
     public function getIterator(): KeyListIterator
     {
         $ns   = $this->getOptions()->getNamespace();
@@ -125,6 +102,28 @@ final class Memory extends AbstractMetadataCapableAdapter implements
         }
 
         return new KeyListIterator($this, $keys);
+    }
+
+    protected function internalSetItems(array $normalizedKeyValuePairs): array
+    {
+        $maxItems                  = $this->getOptions()->getMaxItems();
+        $keysWhichWereNotPersisted = [];
+
+        if ($maxItems !== MemoryOptions::UNLIMITED_ITEMS && count($normalizedKeyValuePairs) > $maxItems) {
+            [$normalizedKeyValuePairs, $keysWhichWereNotPersisted] = $this->sliceOldestItems(
+                $normalizedKeyValuePairs,
+                $maxItems,
+            );
+        }
+
+        foreach ($normalizedKeyValuePairs as $key => $value) {
+            $succeeded = $this->internalSetItem((string) $key, $value);
+            if ($succeeded === false) {
+                $keysWhichWereNotPersisted[] = $key;
+            }
+        }
+
+        return $keysWhichWereNotPersisted;
     }
 
     /**
@@ -310,18 +309,17 @@ final class Memory extends AbstractMetadataCapableAdapter implements
     protected function internalSetItem(string $normalizedKey, mixed $value): bool
     {
         $options = $this->getOptions();
-
-        if (! $this->hasAvailableSpace()) {
-            $memoryLimit = $options->getMemoryLimit();
-            throw new Exception\OutOfSpaceException(
-                "Memory usage exceeds limit ({$memoryLimit})."
-            );
-        }
-
-        $now = $this->clock->now()->getTimestamp();
+        $now     = $this->clock->now()->getTimestamp();
         assert($now >= 0);
+
         $expires = $this->calculateExpireTimestampBasedOnTtl($options->getTtl());
-        return $this->persistCacheItem($normalizedKey, new CacheItem($value, $now, $now, $expires));
+        return $this->persistCacheItem($normalizedKey, new CacheItem(
+            $normalizedKey,
+            $value,
+            $now,
+            $now,
+            $expires
+        ));
     }
 
     /**
@@ -329,15 +327,6 @@ final class Memory extends AbstractMetadataCapableAdapter implements
      */
     protected function internalAddItem(string $normalizedKey, mixed $value): bool
     {
-        $options = $this->getOptions();
-
-        if (! $this->hasAvailableSpace()) {
-            $memoryLimit = $options->getMemoryLimit();
-            throw new Exception\OutOfSpaceException(
-                "Memory usage exceeds limit ({$memoryLimit})."
-            );
-        }
-
         $cacheItem = $this->getCacheItem($normalizedKey);
         if ($cacheItem !== null) {
             return false;
@@ -364,7 +353,13 @@ final class Memory extends AbstractMetadataCapableAdapter implements
         assert($now >= 0);
         $expires = $this->calculateExpireTimestampBasedOnTtl($this->getOptions()->getTtl());
 
-        return $this->persistCacheItem($normalizedKey, new CacheItem($value, $cacheItem->created, $now, $expires));
+        return $this->persistCacheItem($normalizedKey, new CacheItem(
+            $cacheItem->key,
+            $value,
+            $cacheItem->created,
+            $now,
+            $expires
+        ));
     }
 
     /**
@@ -383,7 +378,14 @@ final class Memory extends AbstractMetadataCapableAdapter implements
 
         return $this->persistCacheItem(
             $normalizedKey,
-            new CacheItem($cacheItem->value, $cacheItem->created, $now, $expires, $cacheItem->tags),
+            new CacheItem(
+                $cacheItem->key,
+                $cacheItem->value,
+                $cacheItem->created,
+                $now,
+                $expires,
+                $cacheItem->tags
+            ),
         );
     }
 
@@ -431,18 +433,6 @@ final class Memory extends AbstractMetadataCapableAdapter implements
         );
     }
 
-    private function hasAvailableSpace(): bool
-    {
-        $total = $this->getOptions()->getMemoryLimit();
-
-        if ($total <= MemoryOptions::UNLIMITED_MEMORY) {
-            return true;
-        }
-
-        $free = $total - (float) memory_get_usage(true);
-        return $free > 0;
-    }
-
     private function getCacheItem(string $key): CacheItem|null
     {
         $namespace = $this->getOptions()->getNamespace();
@@ -451,7 +441,7 @@ final class Memory extends AbstractMetadataCapableAdapter implements
             return null;
         }
 
-        if ($this->clock->now()->getTimestamp() >= $cacheItem->expires) {
+        if ($this->isCacheItemExpired($cacheItem)) {
             unset($this->data[$namespace][$key]);
             return null;
         }
@@ -464,7 +454,13 @@ final class Memory extends AbstractMetadataCapableAdapter implements
      */
     private function persistCacheItem(string $key, CacheItem $item): bool
     {
-        $namespace                    = $this->getOptions()->getNamespace();
+        $options   = $this->getOptions();
+        $namespace = $options->getNamespace();
+        unset($this->data[$namespace][$key]);
+
+        $maxItems = $options->getMaxItems();
+        $this->free($namespace, $maxItems);
+
         $this->data[$namespace][$key] = $item;
 
         return true;
@@ -492,5 +488,73 @@ final class Memory extends AbstractMetadataCapableAdapter implements
 
         assert($timestamp >= 0);
         return $timestamp;
+    }
+
+    private function isCacheItemExpired(CacheItem $cacheItem): bool
+    {
+        return $this->clock->now()->getTimestamp() >= $cacheItem->expires;
+    }
+
+    private function free(string $namespace, int $maxItems): void
+    {
+        if ($maxItems === MemoryOptions::UNLIMITED_ITEMS) {
+            return;
+        }
+
+        if (count($this->data[$namespace] ?? []) < $maxItems) {
+            return;
+        }
+
+        $oldest = null;
+        foreach ($this->data[$namespace] ?? [] as $key => $existingItem) {
+            if ($this->isCacheItemExpired($existingItem)) {
+                unset($this->data[$namespace][$key]);
+                break;
+            }
+
+            if ($oldest === null) {
+                $oldest = $existingItem;
+            }
+
+            if ($existingItem->expires < $oldest->expires) {
+                $oldest = $existingItem;
+            }
+        }
+
+        if ($oldest === null) {
+            return;
+        }
+
+        unset($this->data[$namespace][$oldest->key]);
+    }
+
+    /**
+     * @param non-empty-array<non-empty-string|int,mixed> $normalizedKeyValuePairs
+     * @param positive-int $maxItems
+     * @return array{non-empty-array<non-empty-string|int,mixed>, list<non-empty-string|int>}
+     */
+    private function sliceOldestItems(array $normalizedKeyValuePairs, int $maxItems): array
+    {
+        $keysWhichAreNotPersisted = [];
+        $maxItemsExceeded         = false;
+        $items                    = 0;
+
+        foreach (array_keys(array_reverse($normalizedKeyValuePairs, true)) as $key) {
+            if ($maxItemsExceeded === true) {
+                $keysWhichAreNotPersisted[] = $key;
+                unset($normalizedKeyValuePairs[$key]);
+                continue;
+            }
+
+            $items++;
+            if ($items < $maxItems) {
+                continue;
+            }
+
+            $maxItemsExceeded = true;
+        }
+
+        assert($normalizedKeyValuePairs !== []);
+        return [$normalizedKeyValuePairs, $keysWhichAreNotPersisted];
     }
 }

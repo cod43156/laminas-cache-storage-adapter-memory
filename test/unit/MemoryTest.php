@@ -7,13 +7,11 @@ namespace LaminasTest\Cache\Storage\Adapter;
 use DateInterval;
 use DateTimeImmutable;
 use DateTimeZone;
-use Laminas\Cache\Exception\OutOfSpaceException;
 use Laminas\Cache\Storage\Adapter\Memory;
 use Laminas\Cache\Storage\Adapter\MemoryOptions;
 use Lcobucci\Clock\FrozenClock;
 
 use function assert;
-use function memory_get_usage;
 
 /**
  * @template-extends AbstractCommonAdapterTest<Memory, MemoryOptions>
@@ -27,14 +25,6 @@ final class MemoryTest extends AbstractCommonAdapterTest
         $this->storage = new Memory($this->options);
 
         parent::setUp();
-    }
-
-    public function testThrowOutOfSpaceException()
-    {
-        $this->options->setMemoryLimit(memory_get_usage(true) - 8);
-
-        $this->expectException(OutOfSpaceException::class);
-        $this->storage->addItem('test', 'test');
     }
 
     public function testMetadataIsCreatedAndModifiedAccordingly(): void
@@ -60,5 +50,34 @@ final class MemoryTest extends AbstractCommonAdapterTest
         self::assertNotNull($metadata);
         self::assertSame($now->getTimestamp(), $metadata->ctime);
         self::assertSame($future->getTimestamp(), $metadata->mtime);
+    }
+
+    public function testWillRemoveFirstItemWhenPersistingMoreThanAllowedItems(): void
+    {
+        $storage = new Memory(new MemoryOptions(['max_items' => 3]));
+        self::assertSame(['foo'], $storage->setItems(['foo' => 'bar', 'bar' => 'baz', 'baz' => 'qoo', 'qoo' => 'ooq']));
+    }
+
+    public function testWillRemoveOldestItemWhenPersistingMoreThanAllowedItems(): void
+    {
+        $storage = new Memory(new MemoryOptions(['max_items' => 3]));
+        self::assertTrue($storage->setItem('foo', 'bar'));
+        self::assertTrue($storage->setItem('bar', 'baz'));
+        self::assertTrue($storage->setItem('baz', 'qoo'));
+        self::assertTrue($storage->setItem('qoo', 'ooq'));
+        self::assertFalse($storage->hasItem('foo'));
+
+        $storage->flush();
+
+        $options = $storage->getOptions();
+        $options->setTtl(1000);
+        self::assertTrue($storage->setItem('foo', 'bar'));
+        self::assertTrue($storage->setItem('bar', 'baz'));
+        $options->setTtl(100);
+        self::assertTrue($storage->setItem('baz', 'qoo'));
+        $options->setTtl(1000);
+        self::assertTrue($storage->setItem('qoo', 'ooq'));
+
+        self::assertFalse($storage->hasItem('baz'));
     }
 }
